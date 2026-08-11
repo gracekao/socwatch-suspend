@@ -1,0 +1,18 @@
+# Proprietary or separately licensed SoCWatch distributions
+socwatch_android_*/
+socwatch_android_*.tar.gz
+*INTERNAL*.tar.gz
+*NDA*.tar.gz
+
+# Generated reports and diagnostics
+socwatch_reports_*/
+result/
+reports/
+*.csv
+*.log
+
+# Local editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
