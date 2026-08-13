@@ -2,7 +2,7 @@
 
 set -uo pipefail
 
-RUNNER_VERSION="2026.08.10-manual-wake-v1"
+RUNNER_VERSION="2026.08.13-adb-connect-v1"
 SUSPEND_SEC="${1:-60}"
 ADB_TARGET="${2:-${ADB_TARGET:-}}"
 CYCLES=1
@@ -44,7 +44,7 @@ adb() {
 
 adb_connect() {
     [ -n "$ADB_TARGET" ] || return 0
-    "$ADB_BIN" connect "$ADB_TARGET"
+    timeout "$ADB_POLL_TIMEOUT_SEC" "$ADB_BIN" connect "$ADB_TARGET"
 }
 
 mkdir -p "$REPORT_DIR" || {
@@ -105,7 +105,10 @@ if [ -n "$ADB_TARGET" ]; then
     echo "[INFO] Using TCP ADB target: $ADB_TARGET"
     ADB_CONNECT_DEADLINE=$((SECONDS + 60))
     while [ "$SECONDS" -lt "$ADB_CONNECT_DEADLINE" ]; do
-        adb_connect >/dev/null 2>&1 || true
+        echo "[INFO] Trying: adb connect $ADB_TARGET"
+        ADB_CONNECT_OUTPUT="$(adb_connect 2>&1)"
+        ADB_CONNECT_RC=$?
+        echo "[INFO] adb connect result ($ADB_CONNECT_RC): ${ADB_CONNECT_OUTPUT:-no output}"
         [ "$(adb_poll get-state 2>/dev/null | tr -d '\r' || true)" = "device" ] && break
         sleep 2
     done
