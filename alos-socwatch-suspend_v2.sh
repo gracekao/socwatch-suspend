@@ -31,6 +31,8 @@ SUSPEND_FAIL_PATH="/sys/power/suspend_stats/fail"
 RTC_EPOCH_PATH="/sys/class/rtc/rtc0/since_epoch"
 POWER_SETUP_MARKER_PATH="/data/socwatch_power_setup_ready"
 SOCWATCH_START_MARKER_PATH="/data/socwatch_start_allowed"
+WAKEUP_SETUP_READY_MARKER_PATH="/data/socwatch_wakeup_setup_ready"
+WAKEUP_ARMED_MARKER_PATH="/data/socwatch_wakeup_armed"
 SUSPEND_MARKER_PATH="/data/socwatch_suspend_started"
 SOCWATCH_START_TIMEOUT=60
 
@@ -94,7 +96,8 @@ cleanup() {
 
     su shell cmd deviceidle unforce > /dev/null 2>&1
     su shell dumpsys battery reset > /dev/null 2>&1
-    rm -f "$POWER_SETUP_MARKER_PATH" "$SOCWATCH_START_MARKER_PATH" "$SUSPEND_MARKER_PATH"
+    rm -f "$POWER_SETUP_MARKER_PATH" "$SOCWATCH_START_MARKER_PATH" \
+        "$WAKEUP_SETUP_READY_MARKER_PATH" "$WAKEUP_ARMED_MARKER_PATH" "$SUSPEND_MARKER_PATH"
 
     print_summary
 
@@ -142,17 +145,21 @@ write_kernel_marker() {
     su root sh -c "echo '<6>$1' > /dev/kmsg"
 }
 
-#check CONFIG_DEVMEM
 check_devmem() {
-    if [ -f /proc/config.gz ]; then
-        if ! zcat /proc/config.gz | grep -q "CONFIG_DEVMEM=y"; then
-            echo "Error: CONFIG_DEVMEM is not enabled in kernel."
-            echo "Please install the OS with CONFIG_DEVMEM enabled."
-            exit 1
-        fi
-    else
-        echo "Warning: /proc/config.gz not found, skipping DEVMEM check. Please ensure it's enabled."
+    if [ ! -r /proc/config.gz ]; then
+        echo "[ERROR] Cannot verify CONFIG_DEVMEM because /proc/config.gz is not readable."
+        echo "[ERROR] SoCWatch requires CONFIG_DEVMEM=y for complete SLP/S0i2 data."
+        exit 1
     fi
+
+    DEVMEM_CONFIG=$(zcat /proc/config.gz 2>/dev/null | grep '^CONFIG_DEVMEM=\|^# CONFIG_DEVMEM is not set$')
+    if [ "$DEVMEM_CONFIG" != "CONFIG_DEVMEM=y" ]; then
+        echo "[ERROR] CONFIG_DEVMEM is not enabled: ${DEVMEM_CONFIG:-unknown}"
+        echo "[ERROR] Install a kernel built with CONFIG_DEVMEM=y; otherwise SoCWatch SLP/S0i2 data is incomplete."
+        exit 1
+    fi
+
+    echo "[INFO] Kernel configuration verified: CONFIG_DEVMEM=y"
 }
 
 socwatch_install() {
@@ -288,6 +295,7 @@ socwatch_stop() {
 trap cleanup SIGTERM SIGINT
 
 debugfs_setup
+check_devmem
 
 if [ "$ENABLE_SOCWATCH" -eq "1" ]; then
     socwatch_setup
@@ -329,6 +337,21 @@ do
     SUS_SUCC_CNT_PREV=$(su shell cat "$SUSPEND_SUCCESS_PATH")
     SUS_FAIL_CNT_PREV=$(su shell cat "$SUSPEND_FAIL_PATH")
 
+    EPOCH_TIME_B=$(su root cat "$RTC_EPOCH_PATH")
+    echo "ready" > "$WAKEUP_SETUP_READY_MARKER_PATH"
+    echo "Waiting for host to confirm the RTC wakeup alarm..."
+    SOCWATCH_START_WAIT=$SOCWATCH_START_TIMEOUT
+    while [ ! -f "$WAKEUP_ARMED_MARKER_PATH" ]
+    do
+        sleep 1
+        SOCWATCH_START_WAIT=`expr $SOCWATCH_START_WAIT - 1`
+        if [ "$SOCWATCH_START_WAIT" -eq "0" ]; then
+            echo "[ERROR] Host did not confirm the RTC wakeup alarm within $SOCWATCH_START_TIMEOUT seconds."
+            cleanup 1
+        fi
+    done
+    echo "Host confirmed the RTC wakeup alarm."
+
     if [ "$ENABLE_SOCWATCH" -eq "1" ]; then
         socwatch_start
     fi
@@ -337,16 +360,15 @@ do
     KERNEL_START_MARKER="==== start to enter suspend ($KERNEL_MARKER_ID) ===="
     KERNEL_FINISH_MARKER="====== finish suspend ($KERNEL_MARKER_ID) ======"
     write_kernel_marker "$KERNEL_START_MARKER"
-    EPOCH_TIME_B=$(su root cat "$RTC_EPOCH_PATH")
     echo "ready" > "$SUSPEND_MARKER_PATH"
 
     if [ "$SUSPEND_SEC" -eq "0" ]; then
         SLEEP_WAIT_CNTR=-1
     else
-        SLEEP_WAIT_CNTR=120
+        SLEEP_WAIT_CNTR=`expr $SUSPEND_SEC + 30`
     fi
     LAST_REPORTED_FAIL_DELTA=0
-    echo -n "Waiting for S0ix residency."
+    echo -n "Waiting for SocWatch collection duration."
     while :
     do
 	sleep 1
@@ -357,21 +379,28 @@ do
         SUS_SUCC_CNT=$(su shell cat "$SUSPEND_SUCCESS_PATH")
         SUS_FAIL_CNT=$(su shell cat "$SUSPEND_FAIL_PATH")
         SLP_S0_CURRENT=$(su root cat "$SLP_S0_PATH")
+    EPOCH_TIME_CURRENT=$(su root cat "$RTC_EPOCH_PATH")
 
 	SUS_SUCC_DELTA=`expr $SUS_SUCC_CNT - $SUS_SUCC_CNT_PREV`
 	SUS_FAIL_DELTA=`expr $SUS_FAIL_CNT - $SUS_FAIL_CNT_PREV`
+    EPOCH_TIME_CURRENT_DELTA=`expr $EPOCH_TIME_CURRENT - $EPOCH_TIME_B`
 
-    if [ "$SLP_S0_CURRENT" -gt "$SLP_S0_B" ]
+    if [ "$SUSPEND_SEC" -eq "0" -a "$SLP_S0_CURRENT" -gt "$SLP_S0_B" ]
 	then
 	    break
 	fi
+
+    if [ "$SUSPEND_SEC" -gt "0" -a "$EPOCH_TIME_CURRENT_DELTA" -ge "$SUSPEND_SEC" ]
+    then
+        break
+    fi
 
     if [ "$SUS_FAIL_DELTA" -gt "$LAST_REPORTED_FAIL_DELTA" ]
     then
         echo ""
         echo "Warning: suspend failed $SUS_FAIL_DELTA time(s); waiting for an S0ix retry."
         LAST_REPORTED_FAIL_DELTA=$SUS_FAIL_DELTA
-        echo -n "Waiting for S0ix residency."
+        echo -n "Waiting for SocWatch collection duration."
     fi
 
 	if [ "$SLEEP_WAIT_CNTR" -eq "0" ]
@@ -383,12 +412,13 @@ do
     done
     echo ""
 
-    write_kernel_marker "$KERNEL_FINISH_MARKER"
-    print_suspend_kernel_log "$KERNEL_START_MARKER" "$KERNEL_FINISH_MARKER"
-
     if [ "$ENABLE_SOCWATCH" -eq "1" ]; then
+        echo "RTC wakeup reached after $EPOCH_TIME_CURRENT_DELTA second(s); stopping SocWatch immediately."
         socwatch_stop || cleanup 1
     fi
+
+    write_kernel_marker "$KERNEL_FINISH_MARKER"
+    print_suspend_kernel_log "$KERNEL_START_MARKER" "$KERNEL_FINISH_MARKER"
 
     CYCLES_EXECUTED=`expr $CYCLES_EXECUTED + 1`
 

@@ -2,7 +2,7 @@
 
 set -uo pipefail
 
-RUNNER_VERSION="2026.08.13-adb-connect-v1"
+RUNNER_VERSION="2026.08.14-alarm-before-socwatch-v4"
 SUSPEND_SEC="${1:-60}"
 ADB_TARGET="${2:-${ADB_TARGET:-}}"
 CYCLES=1
@@ -15,6 +15,8 @@ REMOTE_STAGE_DIR="/data/local/tmp"
 REMOTE_LOG="/data/asst.log"
 REMOTE_POWER_SETUP_MARKER="/data/socwatch_power_setup_ready"
 REMOTE_SOCWATCH_START_MARKER="/data/socwatch_start_allowed"
+REMOTE_WAKEUP_SETUP_READY_MARKER="/data/socwatch_wakeup_setup_ready"
+REMOTE_WAKEUP_ARMED_MARKER="/data/socwatch_wakeup_armed"
 REMOTE_SUSPEND_MARKER="/data/socwatch_suspend_started"
 REMOTE_REPORT_DIR="/data/local/tmp/socwatch_reports"
 RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
@@ -103,17 +105,19 @@ command -v timeout >/dev/null 2>&1 || die "timeout is not installed or not in PA
 echo "[INFO] Waiting for DUT..."
 if [ -n "$ADB_TARGET" ]; then
     echo "[INFO] Using TCP ADB target: $ADB_TARGET"
-    ADB_CONNECT_DEADLINE=$((SECONDS + 60))
-    while [ "$SECONDS" -lt "$ADB_CONNECT_DEADLINE" ]; do
-        echo "[INFO] Trying: adb connect $ADB_TARGET"
+    ADB_STATE=""
+    for ADB_CONNECT_ATTEMPT in 1 2; do
+        echo "[INFO] Trying ($ADB_CONNECT_ATTEMPT/2): adb connect $ADB_TARGET"
         ADB_CONNECT_OUTPUT="$(adb_connect 2>&1)"
-        ADB_CONNECT_RC=$?
-        echo "[INFO] adb connect result ($ADB_CONNECT_RC): ${ADB_CONNECT_OUTPUT:-no output}"
-        [ "$(adb_poll get-state 2>/dev/null | tr -d '\r' || true)" = "device" ] && break
-        sleep 2
+        ADB_STATE="$(adb_poll get-state 2>/dev/null | tr -d '\r' || true)"
+        if [ "$ADB_STATE" = "device" ]; then
+            echo "[INFO] TCP ADB connection established: $ADB_TARGET"
+            break
+        fi
+        [ "$ADB_CONNECT_ATTEMPT" -eq 2 ] || sleep 2
     done
-    [ "$(adb_poll get-state 2>/dev/null | tr -d '\r' || true)" = "device" ] \
-        || die "Failed to connect to $ADB_TARGET within 60 seconds."
+    [ "$ADB_STATE" = "device" ] \
+        || die "${ADB_CONNECT_OUTPUT:-Failed to connect to $ADB_TARGET}"
 else
     adb wait-for-device || die "DUT is not available."
 fi
@@ -145,7 +149,7 @@ STAGED_DUT_SCRIPT="$REMOTE_STAGE_DIR/$(basename "$REMOTE_DUT_SCRIPT")"
 adb push "$LOCAL_DUT_SCRIPT" "$STAGED_DUT_SCRIPT" || die "Failed to upload DUT test script."
 adb shell "su root cp '$STAGED_DUT_SCRIPT' '$REMOTE_DUT_SCRIPT' && su root chmod +x '$REMOTE_DUT_SCRIPT'" \
     || die "Failed to install DUT test script as root."
-adb shell "su root rm -f $REMOTE_LOG $REMOTE_POWER_SETUP_MARKER $REMOTE_SOCWATCH_START_MARKER $REMOTE_SUSPEND_MARKER" \
+adb shell "su root rm -f $REMOTE_LOG $REMOTE_POWER_SETUP_MARKER $REMOTE_SOCWATCH_START_MARKER $REMOTE_WAKEUP_SETUP_READY_MARKER $REMOTE_WAKEUP_ARMED_MARKER $REMOTE_SUSPEND_MARKER" \
     || die "Failed to remove previous DUT state."
 
 if [ "$MANUAL_WAKE" -eq 1 ]; then
@@ -177,7 +181,34 @@ echo "[INFO] force-idle result ($DOZE_RC): $DOZE_OUTPUT"
 adb shell "su root touch '$REMOTE_SOCWATCH_START_MARKER'" \
     || die "Failed to allow DUT SocWatch startup."
 
-echo "[INFO] Waiting for SocWatch to start and DUT to reach the suspend command..."
+echo "[INFO] Waiting for DUT to become ready for RTC wakeup setup..."
+SUSPEND_READY_DEADLINE=$((SECONDS + 120))
+while [ "$SECONDS" -lt "$SUSPEND_READY_DEADLINE" ]; do
+    if adb shell "su root test -f '$REMOTE_WAKEUP_SETUP_READY_MARKER'" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+if ! adb shell "su root test -f '$REMOTE_WAKEUP_SETUP_READY_MARKER'" >/dev/null 2>&1; then
+    adb shell "su root cat '$REMOTE_LOG'" 2>/dev/null || true
+    die "DUT did not become ready for RTC wakeup setup within 120 seconds."
+fi
+echo "[INFO] DUT is ready for RTC wakeup setup."
+
+if [ "$MANUAL_WAKE" -eq 0 ]; then
+    echo "[INFO] Scheduling wakeup in $SUSPEND_SEC second(s)..."
+    WAKEUP_OUTPUT="$(adb shell cmd power wakeup "$SUSPEND_MSEC" --restore-wakelocks 2>&1)"
+    WAKEUP_RC=$?
+    echo "[INFO] wakeup result ($WAKEUP_RC): $WAKEUP_OUTPUT"
+    [ "$WAKEUP_RC" -eq 0 ] || die "Failed to schedule DUT wakeup."
+    echo "[INFO] RTC wakeup alarm confirmed for $SUSPEND_SEC second(s)."
+else
+    echo "[INFO] Automatic wakeup is disabled."
+fi
+
+adb shell "su root touch '$REMOTE_WAKEUP_ARMED_MARKER'" \
+    || die "Failed to notify DUT that the wakeup alarm is armed."
+echo "[INFO] Waiting for DUT to start SocWatch and acknowledge suspend readiness..."
 SUSPEND_READY_DEADLINE=$((SECONDS + 120))
 while [ "$SECONDS" -lt "$SUSPEND_READY_DEADLINE" ]; do
     if adb shell "su root test -f '$REMOTE_SUSPEND_MARKER'" >/dev/null 2>&1; then
@@ -187,19 +218,9 @@ while [ "$SECONDS" -lt "$SUSPEND_READY_DEADLINE" ]; do
 done
 if ! adb shell "su root test -f '$REMOTE_SUSPEND_MARKER'" >/dev/null 2>&1; then
     adb shell "su root cat '$REMOTE_LOG'" 2>/dev/null || true
-    die "DUT did not reach the suspend command within 120 seconds."
+    die "DUT did not start SocWatch and acknowledge suspend readiness within 120 seconds."
 fi
-echo "[INFO] SocWatch is running and DUT is ready."
-
-if [ "$MANUAL_WAKE" -eq 0 ]; then
-    echo "[INFO] Scheduling wakeup in $SUSPEND_SEC second(s)..."
-    WAKEUP_OUTPUT="$(adb shell cmd power wakeup "$SUSPEND_MSEC" --restore-wakelocks 2>&1)"
-    WAKEUP_RC=$?
-    echo "[INFO] wakeup result ($WAKEUP_RC): $WAKEUP_OUTPUT"
-    [ "$WAKEUP_RC" -eq 0 ] || die "Failed to schedule DUT wakeup."
-else
-    echo "[INFO] Automatic wakeup is disabled."
-fi
+echo "[INFO] SocWatch is running; DUT acknowledged the wakeup alarm and is ready to suspend."
 
 echo "[INFO] Issuing DUT suspend command..."
 SLEEP_OUTPUT="$(adb shell cmd power sleep --disable-wakelocks 2>&1)"
