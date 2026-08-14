@@ -93,15 +93,15 @@ For a fixed-duration run, the host and DUT use marker handshakes to enforce this
 
 1. Verify `CONFIG_DEVMEM=y`, prepare SoCWatch, and configure the DUT for battery operation.
 2. Enter deep device idle with `cmd deviceidle force-idle deep`.
-3. Schedule the RTC wakeup with `cmd power wakeup <milliseconds> --restore-wakelocks` and require a successful return code.
-4. Notify the DUT that the wakeup alarm is armed.
-5. Start SoCWatch and wait until it reports that infinite collection has started.
+3. Start SoCWatch and wait until it reports that infinite collection has started.
+4. Schedule the RTC wakeup with `cmd power wakeup <milliseconds> --restore-wakelocks` and require a successful return code.
+5. Notify the DUT that the wakeup alarm is armed.
 6. Acknowledge suspend readiness and run `cmd power sleep --disable-wakelocks`.
 7. Stop ADB traffic while the DUT is suspended.
 8. Stop SoCWatch immediately after the RTC wakeup and wait for the report to flush.
 9. Collect the focused suspend kernel log, full kernel log, full logcat, and SoCWatch reports.
 
-The duration argument controls the RTC wakeup delay. Because the alarm is armed before SoCWatch starts, the CSV collection duration and S0ix residency can be slightly shorter than the requested wall-clock duration due to SoCWatch startup and suspend-entry overhead.
+The duration argument controls the RTC wakeup delay. Because SoCWatch starts before the alarm is armed, the complete suspend window is recorded and the CSV collection duration can be slightly longer than the requested delay due to alarm setup and suspend-entry overhead.
 
 The cycle passes only when `/sys/kernel/debug/pmc_core/slp_s0_residency_usec` increases. Suspend failures are logged while the DUT continues waiting for a later S0ix attempt within the collection window.
 

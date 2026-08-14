@@ -337,6 +337,10 @@ do
     SUS_SUCC_CNT_PREV=$(su shell cat "$SUSPEND_SUCCESS_PATH")
     SUS_FAIL_CNT_PREV=$(su shell cat "$SUSPEND_FAIL_PATH")
 
+    if [ "$ENABLE_SOCWATCH" -eq "1" ]; then
+        socwatch_start
+    fi
+
     EPOCH_TIME_B=$(su root cat "$RTC_EPOCH_PATH")
     echo "ready" > "$WAKEUP_SETUP_READY_MARKER_PATH"
     echo "Waiting for host to confirm the RTC wakeup alarm..."
@@ -351,10 +355,6 @@ do
         fi
     done
     echo "Host confirmed the RTC wakeup alarm."
-
-    if [ "$ENABLE_SOCWATCH" -eq "1" ]; then
-        socwatch_start
-    fi
 
     KERNEL_MARKER_ID="socwatch-$$-$i"
     KERNEL_START_MARKER="==== start to enter suspend ($KERNEL_MARKER_ID) ===="

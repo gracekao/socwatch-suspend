@@ -2,7 +2,7 @@
 
 set -uo pipefail
 
-RUNNER_VERSION="2026.08.14-alarm-before-socwatch-v4"
+RUNNER_VERSION="2026.08.14-socwatch-before-alarm-v5"
 SUSPEND_SEC="${1:-60}"
 ADB_TARGET="${2:-${ADB_TARGET:-}}"
 CYCLES=1
@@ -181,7 +181,7 @@ echo "[INFO] force-idle result ($DOZE_RC): $DOZE_OUTPUT"
 adb shell "su root touch '$REMOTE_SOCWATCH_START_MARKER'" \
     || die "Failed to allow DUT SocWatch startup."
 
-echo "[INFO] Waiting for DUT to become ready for RTC wakeup setup..."
+echo "[INFO] Waiting for DUT to start SocWatch before RTC wakeup setup..."
 SUSPEND_READY_DEADLINE=$((SECONDS + 120))
 while [ "$SECONDS" -lt "$SUSPEND_READY_DEADLINE" ]; do
     if adb shell "su root test -f '$REMOTE_WAKEUP_SETUP_READY_MARKER'" >/dev/null 2>&1; then
@@ -191,9 +191,9 @@ while [ "$SECONDS" -lt "$SUSPEND_READY_DEADLINE" ]; do
 done
 if ! adb shell "su root test -f '$REMOTE_WAKEUP_SETUP_READY_MARKER'" >/dev/null 2>&1; then
     adb shell "su root cat '$REMOTE_LOG'" 2>/dev/null || true
-    die "DUT did not become ready for RTC wakeup setup within 120 seconds."
+    die "DUT did not start SocWatch within 120 seconds."
 fi
-echo "[INFO] DUT is ready for RTC wakeup setup."
+echo "[INFO] SocWatch is running; DUT is ready for RTC wakeup setup."
 
 if [ "$MANUAL_WAKE" -eq 0 ]; then
     echo "[INFO] Scheduling wakeup in $SUSPEND_SEC second(s)..."
@@ -208,7 +208,7 @@ fi
 
 adb shell "su root touch '$REMOTE_WAKEUP_ARMED_MARKER'" \
     || die "Failed to notify DUT that the wakeup alarm is armed."
-echo "[INFO] Waiting for DUT to start SocWatch and acknowledge suspend readiness..."
+echo "[INFO] Waiting for DUT to acknowledge the wakeup alarm and suspend readiness..."
 SUSPEND_READY_DEADLINE=$((SECONDS + 120))
 while [ "$SECONDS" -lt "$SUSPEND_READY_DEADLINE" ]; do
     if adb shell "su root test -f '$REMOTE_SUSPEND_MARKER'" >/dev/null 2>&1; then
@@ -218,9 +218,9 @@ while [ "$SECONDS" -lt "$SUSPEND_READY_DEADLINE" ]; do
 done
 if ! adb shell "su root test -f '$REMOTE_SUSPEND_MARKER'" >/dev/null 2>&1; then
     adb shell "su root cat '$REMOTE_LOG'" 2>/dev/null || true
-    die "DUT did not start SocWatch and acknowledge suspend readiness within 120 seconds."
+    die "DUT did not acknowledge suspend readiness within 120 seconds."
 fi
-echo "[INFO] SocWatch is running; DUT acknowledged the wakeup alarm and is ready to suspend."
+echo "[INFO] DUT acknowledged the wakeup alarm and is ready to suspend."
 
 echo "[INFO] Issuing DUT suspend command..."
 SLEEP_OUTPUT="$(adb shell cmd power sleep --disable-wakelocks 2>&1)"
