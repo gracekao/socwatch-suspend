@@ -146,15 +146,8 @@ write_kernel_marker() {
 }
 
 check_devmem() {
-    if [ ! -r /proc/config.gz ]; then
-        echo "[ERROR] Cannot verify CONFIG_DEVMEM because /proc/config.gz is not readable."
-        echo "[ERROR] SoCWatch requires CONFIG_DEVMEM=y for complete SLP/S0i2 data."
-        exit 1
-    fi
-
-    DEVMEM_CONFIG=$(zcat /proc/config.gz 2>/dev/null | grep '^CONFIG_DEVMEM=\|^# CONFIG_DEVMEM is not set$')
-    if [ "$DEVMEM_CONFIG" != "CONFIG_DEVMEM=y" ]; then
-        echo "[ERROR] CONFIG_DEVMEM is not enabled: ${DEVMEM_CONFIG:-unknown}"
+    if ! zcat /proc/config.gz 2>/dev/null | grep -q '^CONFIG_DEVMEM=y$'; then
+        echo "[ERROR] CONFIG_DEVMEM=y was not found in /proc/config.gz."
         echo "[ERROR] Install a kernel built with CONFIG_DEVMEM=y; otherwise SoCWatch SLP/S0i2 data is incomplete."
         exit 1
     fi

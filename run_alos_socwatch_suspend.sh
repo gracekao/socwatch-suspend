@@ -164,6 +164,10 @@ echo "[INFO] DUT log: adb shell cat $REMOTE_LOG"
 echo "[INFO] Waiting for DUT battery and power setup..."
 POWER_SETUP_DEADLINE=$((SECONDS + 120))
 while [ "$SECONDS" -lt "$POWER_SETUP_DEADLINE" ]; do
+    if adb shell "su root grep -q '\[ERROR\]\|^Error:' '$REMOTE_LOG'" >/dev/null 2>&1; then
+        adb shell "su root cat '$REMOTE_LOG'" 2>/dev/null || true
+        die "DUT setup failed before battery and power setup completed."
+    fi
     if adb shell "su root test -f '$REMOTE_POWER_SETUP_MARKER'" >/dev/null 2>&1; then
         break
     fi
@@ -184,6 +188,10 @@ adb shell "su root touch '$REMOTE_SOCWATCH_START_MARKER'" \
 echo "[INFO] Waiting for DUT to start SocWatch before RTC wakeup setup..."
 SUSPEND_READY_DEADLINE=$((SECONDS + 120))
 while [ "$SECONDS" -lt "$SUSPEND_READY_DEADLINE" ]; do
+    if adb shell "su root grep -q '\[ERROR\]\|^Error:' '$REMOTE_LOG'" >/dev/null 2>&1; then
+        adb shell "su root cat '$REMOTE_LOG'" 2>/dev/null || true
+        die "DUT failed before SocWatch startup completed."
+    fi
     if adb shell "su root test -f '$REMOTE_WAKEUP_SETUP_READY_MARKER'" >/dev/null 2>&1; then
         break
     fi
@@ -211,6 +219,10 @@ adb shell "su root touch '$REMOTE_WAKEUP_ARMED_MARKER'" \
 echo "[INFO] Waiting for DUT to acknowledge the wakeup alarm and suspend readiness..."
 SUSPEND_READY_DEADLINE=$((SECONDS + 120))
 while [ "$SECONDS" -lt "$SUSPEND_READY_DEADLINE" ]; do
+    if adb shell "su root grep -q '\[ERROR\]\|^Error:' '$REMOTE_LOG'" >/dev/null 2>&1; then
+        adb shell "su root cat '$REMOTE_LOG'" 2>/dev/null || true
+        die "DUT failed before suspend readiness acknowledgement."
+    fi
     if adb shell "su root test -f '$REMOTE_SUSPEND_MARKER'" >/dev/null 2>&1; then
         break
     fi
